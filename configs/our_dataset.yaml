@@ -1,0 +1,46 @@
+project_dir: .
+data_root: data
+
+splits:
+  train_json: data/splits/train_data_new.json
+  test_json: data/splits/test_data.json
+  text_train_json: data/text_comments/video_comment_train.json
+  text_test_json: data/text_comments/video_comment_test.json
+
+raw_inputs:
+  videos: data/raw_videos
+  keypoints: data/raw_keypoints
+  processed_video_features: data/processed_features/video_feature
+  processed_keypoint_features: data/processed_features/keypoint_feature
+
+outputs:
+  text_embedding: outputs/text_embedding
+  video_feature: outputs/video_feature
+  keypoint_feature: outputs/keypoint_feature
+  diffusion_embedding: outputs/diffusion_embedding
+  diffusion_checkpoints: checkpoints/diffusion
+  score_checkpoint: checkpoints/score/predict_model.pt
+  prediction_json: outputs/pred_scores.json
+
+feature_extraction:
+  internvideo_model: OpenGVLab/InternVideo2_5_Chat_8B
+  text_max_length: 512
+  video_num_segments: 48
+  video_input_size: 448
+  keypoint_segments: 20
+
+training:
+  seed: 3407
+  device: cuda:0
+  diffusion:
+    schedule: cosine
+    num_steps: 48
+    epochs: 300
+    batch_size: 8
+    lr: 1.0e-4
+    save_every: 10
+  score:
+    max_epochs: 160
+    batch_size: 8
+    eval_batch_size: 16
+    lr: 1.0e-4

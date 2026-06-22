@@ -1,0 +1,8 @@
+numpy<2
+scipy
+tqdm
+torch
+torchvision
+transformers>=4.36.2
+decord
+Pillow
