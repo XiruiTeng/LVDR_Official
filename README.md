@@ -1,120 +1,49 @@
-# LVDR Official Reproduction on Our Dataset
+# [ECCV 2026] Latent Visual Diffusion Reasoning with Monte Carlo Tree Search
 
-This repository contains an engineered reproduction of the original LVDR/MCTD code for Our Dataset. The model architecture, diffusion schedule, batch sizes, learning rates, and seed follow the original implementation unless explicitly overridden by command-line arguments.
+The official implementation of _Latent Visual Diffusion Reasoning with Monte Carlo Tree Search_
 
-The score predictor is capped at 160 epochs. Passing `--epochs` larger than 160 raises an error, because the reproduced run peaked around epoch 160 and later collapsed to constant predictions.
+**[Xirui Teng](https://xiruiteng.github.io), [Nan Xi*](https://southnx.github.io/), [Junsong Yuan](https://cse.buffalo.edu/~jsyuan/index.html)**
 
-## Repository Layout
+## Before Training
 
-- `lvdr_official/`: Python package containing datasets, models, feature extraction, diffusion training/inference, score prediction, metrics, and MCTS utilities.
-- `scripts/*.py`: Python entry points for each pipeline stage.
-- `configs/our_dataset.yaml`: relative-path configuration and default hyperparameters.
-- `data/`: local input data directory. Large data files are ignored by git.
-- `outputs/`: generated embeddings and prediction JSON files. Ignored by git.
-- `checkpoints/`: trained model checkpoints. Ignored by git.
+This stage prepares the environment, input data, text descriptions, and visual/keypoint features
+needed by the training pipeline.
 
-## Environment
+### Environment
 
-Install dependencies from the project root:
+Create and activate a conda environment first:
 
-```text
-python -m pip install -r requirements.txt
-```
+  ```bash
+  conda create -n lvdr_official python=3.10 -y
+  conda activate lvdr_official
+  python -m pip install --upgrade pip
+  python -m pip install -r requirements.txt
+  ```
 
-The original reproduction used GPU0. You can choose a GPU by passing `--device cuda:0` to training and inference commands.
+### Prepare Data
 
-## Prepare Data
+Prepare the required files under the `data/` directory. Each subdirectory is used as follows:
 
-Place files under these relative paths:
+- `data/splits/`: stores the train/test split JSON files, such as `train_data.json` and `test_data.json`.
+- `data/text_comments/`: stores video-level text comments or descriptions used for text embedding extraction.
+- `data/raw_videos/`: stores raw video files used for video feature extraction and video-based comment generation.
+- `data/raw_keypoints/`: stores raw keypoint files used for keypoint feature extraction.
+- `data/processed_features/`: stores optional precomputed visual and keypoint features if feature extraction is skipped.
 
-```text
-data/splits/train_data_new.json
-data/splits/test_data.json
-data/text_comments/video_comment_train.json
-data/text_comments/video_comment_test.json
-```
+### Generate Video Comment
 
-If extracting features from raw data, place raw inputs here:
-
-```text
-data/raw_videos/<name>.mp4
-data/raw_keypoints/<name>.npz
-```
-
-or:
+Generate video-level comments from raw videos with the Qwen2.5-VL entry point. Replace
+`<prompt_preset>` according to the dataset being processed.
 
 ```text
-data/raw_keypoints/<name>/output_3D/*.npz
+python scripts/generate_qwen_video_comments.py --video-root data/raw_videos --output-json data/text_comments/video_comment_train.json --split-json data/splits/train_data.json --prompt-preset <prompt_preset> --output-text-key comment --fps 1.0 --attn-implementation flash_attention_2
+python scripts/generate_qwen_video_comments.py --video-root data/raw_videos --output-json data/text_comments/video_comment_test.json --split-json data/splits/test_data.json --prompt-preset <prompt_preset> --output-text-key comment --fps 1.0 --attn-implementation flash_attention_2
 ```
 
-Video feature extraction reads each `<name>.mp4` and writes `outputs/video_feature/<name>.pt`.
-Keypoint feature extraction reads either one sequence file at `data/raw_keypoints/<name>.npz`
-or a sorted frame/clip sequence under `data/raw_keypoints/<name>/output_3D/*.npz`, then writes
-`outputs/keypoint_feature/<name>.pt`. Raw keypoint `.npz` files should contain a
-`reconstruction` array by default; pass `--npz-key` if your array uses another key.
+### Extract Text Embeddings
 
-If reusing processed visual/keypoint features, place them here:
-
-```text
-data/processed_features/video_feature/<name>.pt
-data/processed_features/keypoint_feature/<name>.pt
-```
-
-All generated files should stay under:
-
-```text
-outputs/
-checkpoints/
-```
-
-## Generate Video Comment JSON
-
-For datasets where comments were generated directly from videos, such as FitnessAQA, FineDiving,
-JIGSAWS, and Cataract, use the Qwen2.5-VL generation entry point. It saves the same JSON structure
-used by text embedding extraction.
-
-FitnessAQA:
-
-```text
-python scripts/generate_qwen_video_comments.py --video-root data/raw_videos --output-json data/text_comments/video_comment_train.json --split-json data/splits/train_data_new.json --prompt-preset fitness --output-text-key comment --fps 1.0 --attn-implementation flash_attention_2
-python scripts/generate_qwen_video_comments.py --video-root data/raw_videos --output-json data/text_comments/video_comment_test.json --split-json data/splits/test_data.json --prompt-preset fitness --output-text-key comment --fps 1.0 --attn-implementation flash_attention_2
-```
-
-FineDiving:
-
-```text
-python scripts/generate_qwen_video_comments.py --video-root data/raw_videos --output-json data/text_comments/video_comment_train.json --split-json data/splits/train_data_new.json --prompt-preset finediving --output-text-key comment --fps 1.0 --attn-implementation flash_attention_2
-```
-
-JIGSAWS capture-1 videos:
-
-```text
-python scripts/generate_qwen_video_comments.py --video-root data/raw_videos --output-json data/text_comments/video_comment_train.json --recursive --include-glob "*capture1*" --strip-suffix "_capture1.avi" --video-ext ".avi" --prompt-preset jigsaw --output-text-key comment --fps 1.0 --attn-implementation flash_attention_2
-```
-
-Cataract descriptions:
-
-```text
-python scripts/generate_qwen_video_comments.py --video-root data/raw_videos --output-json data/text_comments/cataract_description.json --prompt-preset cataract --output-text-key description --fps 25
-```
-
-If starting from existing pairwise action-difference comment files, the old
-`text_ground_truth*.json` files can be reproduced by keeping one single-video comment per unique
-`video_0_name`/`video_1_name`:
-
-```text
-python scripts/generate_text_ground_truth.py --pair-json data/text_comments/all_gd.json --output-json data/text_comments/text_ground_truth.json
-python scripts/generate_text_ground_truth.py --pair-json data/text_comments/test_text.json --output-json data/text_comments/text_ground_truth_test.json
-```
-
-Then convert `commentary` to the `comment` field used by text embedding extraction:
-
-```text
-python scripts/generate_video_comments.py --source-json data/text_comments/text_ground_truth.json --output-json data/text_comments/video_comment_train.json
-python scripts/generate_video_comments.py --source-json data/text_comments/text_ground_truth_test.json --output-json data/text_comments/video_comment_test.json
-```
-
-## Step 1: Extract Text Embeddings
+Convert the generated video comments into text embeddings. The train and test comment files should
+be processed separately.
 
 Train comments:
 
@@ -128,48 +57,71 @@ Test comments:
 python scripts/extract_text_embeddings.py --split-json data/text_comments/video_comment_test.json --output-dir outputs/text_embedding --text-key comment --name-key name --max-length 512
 ```
 
-## Step 2: Extract Video Features
+### Extract Video Features
+
+Extract visual features from the raw videos for both the training and test splits. The extracted
+features are saved under `outputs/video_feature`.
 
 ```text
-python scripts/extract_video_features.py --video-root data/raw_videos --split-json data/splits/train_data_new.json --output-dir outputs/video_feature --num-segments 48 --input-size 448
+python scripts/extract_video_features.py --video-root data/raw_videos --split-json data/splits/train_data.json --output-dir outputs/video_feature --num-segments 48 --input-size 448
 python scripts/extract_video_features.py --video-root data/raw_videos --split-json data/splits/test_data.json --output-dir outputs/video_feature --num-segments 48 --input-size 448
 ```
 
-## Step 3: Extract 3D Keypoints from Videos
+### Extract 3D Keypoints from Videos
+
+First clone [HoT](https://github.com/NationalGAILab/HoT):
 
 ```text
 git clone https://github.com/NationalGAILab/HoT.git ../HoT
-python scripts/extract_video_keypoints_hot.py --hot-root ../HoT --video-root data/raw_videos --split-json data/splits/train_data_new.json --output-dir data/raw_keypoints --python /path/to/hot/env/bin/python --gpu 0
+```
+
+Then set up a separate HoT environment following the official HoT instructions.
+
+Place the HoT repository next to this project directory, so the expected path is:
+
+```text
+../HoT
+```
+
+After HoT is installed and its environment is ready, extract 3D keypoints with:
+
+```text
+python scripts/extract_video_keypoints_hot.py --hot-root ../HoT --video-root data/raw_videos --split-json data/splits/train_data.json --output-dir data/raw_keypoints --python /path/to/hot/env/bin/python --gpu 0
 python scripts/extract_video_keypoints_hot.py --hot-root ../HoT --video-root data/raw_videos --split-json data/splits/test_data.json --output-dir data/raw_keypoints --python /path/to/hot/env/bin/python --gpu 0
 ```
 
-## Step 4: Extract Keypoint Features
+### Extract Keypoint Features
+
+Convert the raw 3D keypoints into fixed-length keypoint features used by the diffusion model.
+The extracted features are saved under `outputs/keypoint_feature`.
 
 ```text
-python scripts/extract_keypoint_features.py --input-root data/raw_keypoints --split-json data/splits/train_data_new.json --output-dir outputs/keypoint_feature --segments 20
+python scripts/extract_keypoint_features.py --input-root data/raw_keypoints --split-json data/splits/train_data.json --output-dir outputs/keypoint_feature --segments 20
 python scripts/extract_keypoint_features.py --input-root data/raw_keypoints --split-json data/splits/test_data.json --output-dir outputs/keypoint_feature --segments 20
 ```
 
-## Step 5: Inspect One Sample
+## Training Pipeline
 
-Use this to confirm the feature files are readable and have the expected shapes:
+After all required features are prepared, train the diffusion model and the score predictor.
+
+### Train Diffusion from Scratch
+
+Train the latent diffusion model using text embeddings, video features, and keypoint features from
+the training split.
 
 ```text
-python scripts/inspect_sample.py --name SAMPLE_NAME --video-root outputs/video_feature --keypoint-root outputs/keypoint_feature --embedding-root outputs/diffusion_embedding
+python scripts/train_diffusion.py --train-json data/splits/train_data.json --text-root outputs/text_embedding --video-root outputs/video_feature --keypoint-root outputs/keypoint_feature --output-dir checkpoints/diffusion --device cuda:0 --schedule cosine --epochs 300 --batch-size 8 --lr 1e-4 --save-every 10
 ```
 
-## Step 6: Train Diffusion from Scratch
+### Generate Diffusion Embeddings
 
-```text
-python scripts/train_diffusion.py --train-json data/splits/train_data_new.json --text-root outputs/text_embedding --video-root outputs/video_feature --keypoint-root outputs/keypoint_feature --output-dir checkpoints/diffusion --device cuda:0 --schedule cosine --epochs 300 --batch-size 8 --lr 1e-4 --seed 3407 --save-every 10
-```
-
-## Step 7: Generate Diffusion Embeddings
+Use the trained diffusion checkpoint to generate latent diffusion embeddings. These embeddings are
+used by the score predictor and should be generated for both train and test splits.
 
 Train split:
 
 ```text
-python scripts/generate_diffusion_embeddings.py --split-json data/splits/train_data_new.json --video-root outputs/video_feature --keypoint-root outputs/keypoint_feature --output-root outputs/diffusion_embedding --diffusion-checkpoint checkpoints/diffusion/Diffusion.pt --reshape-keypoint-checkpoint checkpoints/diffusion/reshape_keypoint_module.pt --reshape-all-checkpoint checkpoints/diffusion/reshape_all_module.pt --device cuda:0 --schedule cosine
+python scripts/generate_diffusion_embeddings.py --split-json data/splits/train_data.json --video-root outputs/video_feature --keypoint-root outputs/keypoint_feature --output-root outputs/diffusion_embedding --diffusion-checkpoint checkpoints/diffusion/Diffusion.pt --reshape-keypoint-checkpoint checkpoints/diffusion/reshape_keypoint_module.pt --reshape-all-checkpoint checkpoints/diffusion/reshape_all_module.pt --device cuda:0 --schedule cosine
 ```
 
 Test split:
@@ -178,27 +130,27 @@ Test split:
 python scripts/generate_diffusion_embeddings.py --split-json data/splits/test_data.json --video-root outputs/video_feature --keypoint-root outputs/keypoint_feature --output-root outputs/diffusion_embedding --diffusion-checkpoint checkpoints/diffusion/Diffusion.pt --reshape-keypoint-checkpoint checkpoints/diffusion/reshape_keypoint_module.pt --reshape-all-checkpoint checkpoints/diffusion/reshape_all_module.pt --device cuda:0 --schedule cosine
 ```
 
-## Step 8: Train Score Predictor
+### Train Score Predictor
+
+Train the score predictor using the generated diffusion embeddings and video features.
 
 ```text
-python scripts/train_score.py --train-json data/splits/train_data_new.json --test-json data/splits/test_data.json --embedding-root outputs/diffusion_embedding --video-root outputs/video_feature --output-checkpoint checkpoints/score/predict_model.pt --device cuda:0 --epochs 160 --batch-size 8 --eval-batch-size 16 --lr 1e-4 --seed 3407
+python scripts/train_score.py --train-json data/splits/train_data.json --test-json data/splits/test_data.json --embedding-root outputs/diffusion_embedding --video-root outputs/video_feature --output-checkpoint checkpoints/score/predict_model.pt --device cuda:0 --epochs 160 --batch-size 8 --eval-batch-size 16 --lr 1e-4
 ```
 
-## Step 9: Predict Scores
+## Inference Pipeline
+
+Use the trained checkpoints to predict test scores and run MCTS planning.
+
+### Predict Scores
+
+Predict scores for the test split with the trained score predictor.
 
 ```text
 python scripts/predict_scores.py --split-json data/splits/test_data.json --embedding-root outputs/diffusion_embedding --video-root outputs/video_feature --predict-checkpoint checkpoints/score/predict_model.pt --output outputs/pred_scores.json --device cuda:0 --batch-size 8
 ```
 
-## Step 10: Evaluate Predictions
-
-```text
-python scripts/evaluate_scores.py --pred-json outputs/pred_scores.json --pred-key pred_score --target-key score
-```
-
-The evaluation prints `rho`, `rl2`, `mse`, and `mae`.
-
-## Step 11: MCTS Planning
+### MCTS Planning
 
 First generate diffusion embeddings with `--save-steps`, because MCTS reads the cached denoising states for each diffusion step:
 
@@ -210,21 +162,4 @@ Then run MCTS planning. The selected MCTS plan for each sample is saved to the J
 
 ```text
 python scripts/plan_mcts.py --split-json data/splits/test_data.json --pred-score-json outputs/pred_scores.json --video-root outputs/video_feature --keypoint-root outputs/keypoint_feature --denoise-root outputs/denoise_steps --output outputs/mcts_plans.json --diffusion-checkpoint checkpoints/diffusion/Diffusion.pt --reshape-keypoint-checkpoint checkpoints/diffusion/reshape_keypoint_module.pt --reshape-all-checkpoint checkpoints/diffusion/reshape_all_module.pt --predict-checkpoint checkpoints/score/predict_model.pt --device cuda:0 --schedule cosine --num-simulations 150
-```
-
-## Useful CLI Help
-
-Each script exposes argparse help:
-
-```text
-python scripts/extract_text_embeddings.py --help
-python scripts/generate_qwen_video_comments.py --help
-python scripts/generate_text_ground_truth.py --help
-python scripts/generate_video_comments.py --help
-python scripts/extract_video_keypoints_hot.py --help
-python scripts/train_diffusion.py --help
-python scripts/generate_diffusion_embeddings.py --help
-python scripts/train_score.py --help
-python scripts/predict_scores.py --help
-python scripts/plan_mcts.py --help
 ```
