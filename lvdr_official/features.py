@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -250,6 +252,17 @@ def _video_names(video_root: Path, video_ext: str, max_samples: int | None) -> l
     return names[:max_samples] if max_samples and max_samples > 0 else names
 
 
+def _video_names_from_split_or_root(
+    video_root: Path,
+    split_json: str | Path | None = None,
+    name_key: str = "name",
+    video_ext: str = ".mp4",
+    max_samples: int | None = None,
+) -> list[str]:
+    names = _names_from_split(split_json, name_key=name_key, max_samples=max_samples)
+    return names or _video_names(video_root, video_ext, max_samples)
+
+
 def extract_video_features(
     video_root: str | Path,
     output_dir: str | Path,
@@ -270,7 +283,7 @@ def extract_video_features(
     output_dir = ensure_dir(output_dir)
     names = _names_from_split(split_json, name_key=name_key, max_samples=max_samples)
     if not names:
-        names = _video_names(video_root, video_ext, max_samples)
+        names = _video_names_from_split_or_root(video_root, video_ext=video_ext, max_samples=max_samples)
 
     dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
     model = AutoModel.from_pretrained(
@@ -300,6 +313,90 @@ def extract_video_features(
             feature = model.extract_feature(pixel_values).detach().cpu()
         torch.save(feature, output_path)
         written.append(output_path)
+    return written
+
+
+def _link_or_copy_video(source: Path, target: Path, copy_video: bool) -> None:
+    ensure_dir(target.parent)
+    if target.exists() or target.is_symlink():
+        target.unlink()
+    if copy_video:
+        shutil.copy2(source, target)
+    else:
+        target.symlink_to(source.resolve())
+
+
+def extract_hot_video_keypoints(
+    hot_root: str | Path,
+    video_root: str | Path,
+    output_dir: str | Path,
+    split_json: str | Path | None = None,
+    name_key: str = "name",
+    video_ext: str = ".mp4",
+    python_executable: str = "python",
+    gpu: str = "0",
+    max_samples: int | None = None,
+    skip_existing: bool = True,
+    copy_video: bool = False,
+    fix_z: bool = False,
+) -> list[Path]:
+    """Run the HoT batch demo script to convert raw videos into 3D keypoint npz files."""
+    hot_root = Path(hot_root)
+    video_root = Path(video_root)
+    output_dir = ensure_dir(output_dir)
+    hot_script = hot_root / "demo" / "get_keypoint.py"
+    if not hot_script.exists():
+        raise FileNotFoundError(f"HoT batch keypoint script not found: {hot_script}")
+
+    names = _video_names_from_split_or_root(
+        video_root,
+        split_json=split_json,
+        name_key=name_key,
+        video_ext=video_ext,
+        max_samples=max_samples,
+    )
+
+    pending_names: list[str] = []
+    written: list[Path] = []
+    for name in names:
+        target_npz = output_dir / name / "output_3D" / "output_keypoints_3d.npz"
+        if target_npz.exists() and skip_existing:
+            written.append(target_npz)
+        else:
+            pending_names.append(name)
+
+    if not pending_names:
+        return written
+
+    with tempfile.TemporaryDirectory(prefix="lvdr_hot_videos_") as temp_dir:
+        hot_input_dir = Path(temp_dir)
+        for name in pending_names:
+            video_path = video_root / f"{name}{video_ext}"
+            if not video_path.exists():
+                raise FileNotFoundError(video_path)
+            _link_or_copy_video(video_path, hot_input_dir / f"{name}{video_ext}", copy_video=copy_video)
+
+        command = [
+            python_executable,
+            "demo/get_keypoint.py",
+            "--input_dir",
+            str(hot_input_dir),
+            "--output_dir",
+            str(output_dir),
+            "--gpu",
+            gpu,
+            "--ext",
+            video_ext.lstrip("."),
+        ]
+        if fix_z:
+            command.append("--fix_z")
+        subprocess.run(command, cwd=hot_root, check=True)
+
+    for name in pending_names:
+        target_npz = output_dir / name / "output_3D" / "output_keypoints_3d.npz"
+        if not target_npz.exists():
+            raise FileNotFoundError(f"HoT did not produce expected keypoint file: {target_npz}")
+        written.append(target_npz)
     return written
 
 
@@ -339,7 +436,30 @@ def process_joint(points: list[np.ndarray], angles: list[float], second: int) ->
     return vec / norm if norm != 0 else vec
 
 
+def _segment_bounds(total_frames: int, segments: int) -> list[tuple[int, int]]:
+    if segments <= 0:
+        raise ValueError("segments must be positive.")
+    if total_frames <= 0:
+        raise ValueError("Cannot preprocess an empty keypoint sequence.")
+
+    bounds = np.linspace(0, total_frames, segments + 1)
+    segment_bounds: list[tuple[int, int]] = []
+    for idx in range(segments):
+        start = int(np.floor(bounds[idx]))
+        end = int(np.floor(bounds[idx + 1]))
+        if end <= start:
+            center = int(np.clip(round((bounds[idx] + bounds[idx + 1]) / 2.0), 0, total_frames - 1))
+            start, end = center, center + 1
+        segment_bounds.append((start, min(end, total_frames)))
+    return segment_bounds
+
+
 def preprocess_keypoints(keypoint: np.ndarray, segments: int = 20) -> list[list[float]]:
+    if keypoint.ndim != 3:
+        raise ValueError(f"Expected keypoints with shape (frames, joints, dims), got {keypoint.shape}.")
+    if keypoint.shape[1] <= 16 or keypoint.shape[2] < 3:
+        raise ValueError(f"Expected at least 17 joints with 3D coordinates, got {keypoint.shape}.")
+
     joints = ["1", "2", "4", "5", "11", "12", "14", "15"]
     angle_indices = {
         "1": (1, 0, 2),
@@ -352,16 +472,7 @@ def preprocess_keypoints(keypoint: np.ndarray, segments: int = 20) -> list[list[
         "15": (15, 14, 16),
     }
     total_frames = keypoint.shape[0]
-    base_length = total_frames // segments
-    segment_bounds = []
-    current_start = 0
-    for i in range(segments):
-        if i < segments - 1:
-            seg_length = base_length
-        else:
-            seg_length = total_frames - current_start
-        segment_bounds.append((current_start, current_start + seg_length))
-        current_start += seg_length
+    segment_bounds = _segment_bounds(total_frames, segments)
 
     final_tensor: list[list[float]] = []
     for start, end in segment_bounds:
@@ -394,13 +505,51 @@ def _find_keypoint_source(input_root: Path, name: str) -> Path:
     ]
     for directory in candidates:
         if directory.exists():
-            npz_files = sorted(directory.glob("*.npz"))
-            if npz_files:
-                return npz_files[0]
+            if any(directory.glob("*.npz")):
+                return directory
     npz_path = input_root / f"{name}.npz"
     if npz_path.exists():
         return npz_path
     raise FileNotFoundError(f"No .pt or .npz keypoint source found for {name} in {input_root}")
+
+
+def _load_npz_array(path: Path, npz_key: str) -> np.ndarray:
+    with np.load(path) as payload:
+        if npz_key in payload:
+            array = payload[npz_key]
+        elif len(payload.files) == 1:
+            array = payload[payload.files[0]]
+        else:
+            keys = ", ".join(payload.files)
+            raise KeyError(f"{path} does not contain key {npz_key!r}. Available keys: {keys}")
+    return np.asarray(array, dtype=np.float32)
+
+
+def _as_keypoint_sequence(array: np.ndarray, source: Path) -> np.ndarray:
+    if array.ndim == 2:
+        array = array[None, ...]
+    if array.ndim != 3:
+        raise ValueError(f"Expected {source} to contain (joints, dims) or (frames, joints, dims), got {array.shape}.")
+    if array.shape[1] <= 16 or array.shape[2] < 3:
+        raise ValueError(f"Expected {source} to contain at least 17 joints with 3D coordinates, got {array.shape}.")
+    return array[:, :, :3]
+
+
+def load_raw_keypoints(source: Path, npz_key: str = "reconstruction") -> np.ndarray:
+    if source.is_dir():
+        npz_files = sorted(source.glob("*.npz"))
+        if not npz_files:
+            raise FileNotFoundError(f"No .npz files found in {source}.")
+        arrays = [_as_keypoint_sequence(_load_npz_array(path, npz_key), path) for path in npz_files]
+        keypoint = np.concatenate(arrays, axis=0)
+    else:
+        keypoint = _as_keypoint_sequence(_load_npz_array(source, npz_key), source)
+
+    non_zero_mask = ~np.all(keypoint == 0, axis=(1, 2))
+    keypoint = keypoint[non_zero_mask]
+    if keypoint.shape[0] == 0:
+        raise ValueError(f"No non-zero keypoint frames found in {source}.")
+    return keypoint
 
 
 def extract_keypoint_features(
@@ -420,6 +569,8 @@ def extract_keypoint_features(
     if not names:
         names = [path.stem for path in sorted(input_root.glob("*.pt"))]
         if not names:
+            names = [path.stem for path in sorted(input_root.glob("*.npz"))]
+        if not names:
             names = [path.name for path in sorted(input_root.iterdir()) if path.is_dir()]
         names = names[:max_samples] if max_samples and max_samples > 0 else names
 
@@ -438,13 +589,13 @@ def extract_keypoint_features(
         if source.suffix == ".pt":
             shutil.copy2(source, output_path)
         else:
-            keypoint = np.load(source)[npz_key]
-            non_zero_mask = ~np.all(keypoint == 0, axis=(1, 2))
-            non_zero_frames = keypoint[non_zero_mask]
+            keypoint = load_raw_keypoints(source, npz_key=npz_key)
             joint_tensor = torch.tensor(
-                preprocess_keypoints(non_zero_frames, segments=segments),
+                preprocess_keypoints(keypoint, segments=segments),
                 dtype=torch.float32,
             )
+            if joint_tensor.shape != (segments, 40):
+                raise ValueError(f"Expected keypoint feature shape {(segments, 40)}, got {tuple(joint_tensor.shape)}.")
             torch.save(joint_tensor, output_path)
         written.append(output_path)
     return written

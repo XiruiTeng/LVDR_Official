@@ -47,6 +47,12 @@ or:
 data/raw_keypoints/<name>/output_3D/*.npz
 ```
 
+Video feature extraction reads each `<name>.mp4` and writes `outputs/video_feature/<name>.pt`.
+Keypoint feature extraction reads either one sequence file at `data/raw_keypoints/<name>.npz`
+or a sorted frame/clip sequence under `data/raw_keypoints/<name>/output_3D/*.npz`, then writes
+`outputs/keypoint_feature/<name>.pt`. Raw keypoint `.npz` files should contain a
+`reconstruction` array by default; pass `--npz-key` if your array uses another key.
+
 If reusing processed visual/keypoint features, place them here:
 
 ```text
@@ -75,37 +81,29 @@ Test comments:
 python scripts/extract_text_embeddings.py --split-json data/text_comments/video_comment_test.json --output-dir outputs/text_embedding --text-key comment --name-key name --max-length 512
 ```
 
-## Step 2: Extract or Copy Video Features
-
-Option A, extract from raw videos:
+## Step 2: Extract Video Features
 
 ```text
 python scripts/extract_video_features.py --video-root data/raw_videos --split-json data/splits/train_data_new.json --output-dir outputs/video_feature --num-segments 48 --input-size 448
 python scripts/extract_video_features.py --video-root data/raw_videos --split-json data/splits/test_data.json --output-dir outputs/video_feature --num-segments 48 --input-size 448
 ```
 
-Option B, copy processed `.pt` features:
+## Step 3: Extract 3D Keypoints from Videos
 
 ```text
-python scripts/copy_features.py --input-root data/processed_features/video_feature --output-dir outputs/video_feature --extension .pt
+git clone https://github.com/NationalGAILab/HoT.git ../HoT
+python scripts/extract_video_keypoints_hot.py --hot-root ../HoT --video-root data/raw_videos --split-json data/splits/train_data_new.json --output-dir data/raw_keypoints --python /path/to/hot/env/bin/python --gpu 0
+python scripts/extract_video_keypoints_hot.py --hot-root ../HoT --video-root data/raw_videos --split-json data/splits/test_data.json --output-dir data/raw_keypoints --python /path/to/hot/env/bin/python --gpu 0
 ```
 
-## Step 3: Extract or Copy Keypoint Features
-
-Option A, extract from raw keypoints:
+## Step 4: Extract Keypoint Features
 
 ```text
 python scripts/extract_keypoint_features.py --input-root data/raw_keypoints --split-json data/splits/train_data_new.json --output-dir outputs/keypoint_feature --segments 20
 python scripts/extract_keypoint_features.py --input-root data/raw_keypoints --split-json data/splits/test_data.json --output-dir outputs/keypoint_feature --segments 20
 ```
 
-Option B, copy processed `.pt` features:
-
-```text
-python scripts/copy_features.py --input-root data/processed_features/keypoint_feature --output-dir outputs/keypoint_feature --extension .pt
-```
-
-## Step 4: Inspect One Sample
+## Step 5: Inspect One Sample
 
 Use this to confirm the feature files are readable and have the expected shapes:
 
@@ -113,13 +111,13 @@ Use this to confirm the feature files are readable and have the expected shapes:
 python scripts/inspect_sample.py --name SAMPLE_NAME --video-root outputs/video_feature --keypoint-root outputs/keypoint_feature --embedding-root outputs/diffusion_embedding
 ```
 
-## Step 5: Train Diffusion from Scratch
+## Step 6: Train Diffusion from Scratch
 
 ```text
 python scripts/train_diffusion.py --train-json data/splits/train_data_new.json --text-root outputs/text_embedding --video-root outputs/video_feature --keypoint-root outputs/keypoint_feature --output-dir checkpoints/diffusion --device cuda:0 --schedule cosine --epochs 300 --batch-size 8 --lr 1e-4 --seed 3407 --save-every 10
 ```
 
-## Step 6: Generate Diffusion Embeddings
+## Step 7: Generate Diffusion Embeddings
 
 Train split:
 
@@ -133,19 +131,19 @@ Test split:
 python scripts/generate_diffusion_embeddings.py --split-json data/splits/test_data.json --video-root outputs/video_feature --keypoint-root outputs/keypoint_feature --output-root outputs/diffusion_embedding --diffusion-checkpoint checkpoints/diffusion/Diffusion.pt --reshape-keypoint-checkpoint checkpoints/diffusion/reshape_keypoint_module.pt --reshape-all-checkpoint checkpoints/diffusion/reshape_all_module.pt --device cuda:0 --schedule cosine
 ```
 
-## Step 7: Train Score Predictor
+## Step 8: Train Score Predictor
 
 ```text
 python scripts/train_score.py --train-json data/splits/train_data_new.json --test-json data/splits/test_data.json --embedding-root outputs/diffusion_embedding --video-root outputs/video_feature --output-checkpoint checkpoints/score/predict_model.pt --device cuda:0 --epochs 160 --batch-size 8 --eval-batch-size 16 --lr 1e-4 --seed 3407
 ```
 
-## Step 8: Predict Scores
+## Step 9: Predict Scores
 
 ```text
 python scripts/predict_scores.py --split-json data/splits/test_data.json --embedding-root outputs/diffusion_embedding --video-root outputs/video_feature --predict-checkpoint checkpoints/score/predict_model.pt --output outputs/pred_scores.json --device cuda:0 --batch-size 8
 ```
 
-## Step 9: Evaluate Predictions
+## Step 10: Evaluate Predictions
 
 ```text
 python scripts/evaluate_scores.py --pred-json outputs/pred_scores.json --pred-key pred_score --target-key score
@@ -153,14 +151,30 @@ python scripts/evaluate_scores.py --pred-json outputs/pred_scores.json --pred-ke
 
 The evaluation prints `rho`, `rl2`, `mse`, and `mae`.
 
+## Step 11: MCTS Planning
+
+First generate diffusion embeddings with `--save-steps`, because MCTS reads the cached denoising states for each diffusion step:
+
+```text
+python scripts/generate_diffusion_embeddings.py --split-json data/splits/test_data.json --video-root outputs/video_feature --keypoint-root outputs/keypoint_feature --output-root outputs/denoise_steps --diffusion-checkpoint checkpoints/diffusion/Diffusion.pt --reshape-keypoint-checkpoint checkpoints/diffusion/reshape_keypoint_module.pt --reshape-all-checkpoint checkpoints/diffusion/reshape_all_module.pt --device cuda:0 --schedule cosine --save-steps
+```
+
+Then run MCTS planning. The selected MCTS plan for each sample is saved to the JSON file specified by `--output`.
+
+```text
+python scripts/plan_mcts.py --split-json data/splits/test_data.json --pred-score-json outputs/pred_scores.json --video-root outputs/video_feature --keypoint-root outputs/keypoint_feature --denoise-root outputs/denoise_steps --output outputs/mcts_plans.json --diffusion-checkpoint checkpoints/diffusion/Diffusion.pt --reshape-keypoint-checkpoint checkpoints/diffusion/reshape_keypoint_module.pt --reshape-all-checkpoint checkpoints/diffusion/reshape_all_module.pt --predict-checkpoint checkpoints/score/predict_model.pt --device cuda:0 --schedule cosine --num-simulations 150
+```
+
 ## Useful CLI Help
 
 Each script exposes argparse help:
 
 ```text
 python scripts/extract_text_embeddings.py --help
+python scripts/extract_video_keypoints_hot.py --help
 python scripts/train_diffusion.py --help
 python scripts/generate_diffusion_embeddings.py --help
 python scripts/train_score.py --help
 python scripts/predict_scores.py --help
+python scripts/plan_mcts.py --help
 ```

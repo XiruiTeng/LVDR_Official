@@ -12,6 +12,7 @@ from .diffusion import NoiseSchedule, generate_embeddings, load_diffusion_bundle
 from .features import (
     DEFAULT_INTERNVIDEO_MODEL,
     copy_existing_features,
+    extract_hot_video_keypoints,
     extract_keypoint_features,
     extract_text_embeddings,
     extract_video_features,
@@ -84,6 +85,20 @@ def build_parser() -> argparse.ArgumentParser:
     video.add_argument("--max-samples", type=int, default=0)
     video.add_argument("--device-map", default="auto")
     video.add_argument("--overwrite", action="store_true")
+
+    hot = sub.add_parser("extract-video-keypoints-hot", help="Use a HoT checkout to extract 3D keypoints from raw videos.")
+    hot.add_argument("--hot-root", type=Path, required=True, help="Path to the cloned NationalGAILab/HoT repository.")
+    hot.add_argument("--video-root", type=Path, required=True)
+    hot.add_argument("--output-dir", type=Path, required=True)
+    hot.add_argument("--split-json", type=Path, default=None)
+    hot.add_argument("--name-key", default="name")
+    hot.add_argument("--video-ext", default=".mp4")
+    hot.add_argument("--python", default="python", help="Python executable inside the HoT environment.")
+    hot.add_argument("--gpu", default="0")
+    hot.add_argument("--max-samples", type=int, default=0)
+    hot.add_argument("--overwrite", action="store_true")
+    hot.add_argument("--copy-video", action="store_true", help="Copy videos into HoT demo/video instead of symlinking.")
+    hot.add_argument("--fix-z", action="store_true")
 
     keypoint = sub.add_parser("extract-keypoint", help="Extract or copy 20x40 keypoint features.")
     keypoint.add_argument("--input-root", type=Path, required=True)
@@ -255,6 +270,24 @@ def main() -> None:
             max_samples=args.max_samples,
             skip_existing=not args.overwrite,
             device_map=args.device_map,
+        )
+        print(json.dumps({"num_written": len(written), "output_dir": str(args.output_dir)}, indent=2))
+        return
+
+    if args.command == "extract-video-keypoints-hot":
+        written = extract_hot_video_keypoints(
+            args.hot_root,
+            args.video_root,
+            args.output_dir,
+            split_json=args.split_json,
+            name_key=args.name_key,
+            video_ext=args.video_ext,
+            python_executable=args.python,
+            gpu=args.gpu,
+            max_samples=args.max_samples,
+            skip_existing=not args.overwrite,
+            copy_video=args.copy_video,
+            fix_z=args.fix_z,
         )
         print(json.dumps({"num_written": len(written), "output_dir": str(args.output_dir)}, indent=2))
         return
