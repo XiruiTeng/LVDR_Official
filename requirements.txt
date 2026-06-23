@@ -4,5 +4,7 @@ tqdm
 torch
 torchvision
 transformers>=4.36.2
+accelerate
+qwen-vl-utils
 decord
 Pillow

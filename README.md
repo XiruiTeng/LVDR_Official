@@ -67,6 +67,53 @@ outputs/
 checkpoints/
 ```
 
+## Generate Video Comment JSON
+
+For datasets where comments were generated directly from videos, such as FitnessAQA, FineDiving,
+JIGSAWS, and Cataract, use the Qwen2.5-VL generation entry point. It saves the same JSON structure
+used by text embedding extraction.
+
+FitnessAQA:
+
+```text
+python scripts/generate_qwen_video_comments.py --video-root data/raw_videos --output-json data/text_comments/video_comment_train.json --split-json data/splits/train_data_new.json --prompt-preset fitness --output-text-key comment --fps 1.0 --attn-implementation flash_attention_2
+python scripts/generate_qwen_video_comments.py --video-root data/raw_videos --output-json data/text_comments/video_comment_test.json --split-json data/splits/test_data.json --prompt-preset fitness --output-text-key comment --fps 1.0 --attn-implementation flash_attention_2
+```
+
+FineDiving:
+
+```text
+python scripts/generate_qwen_video_comments.py --video-root data/raw_videos --output-json data/text_comments/video_comment_train.json --split-json data/splits/train_data_new.json --prompt-preset finediving --output-text-key comment --fps 1.0 --attn-implementation flash_attention_2
+```
+
+JIGSAWS capture-1 videos:
+
+```text
+python scripts/generate_qwen_video_comments.py --video-root data/raw_videos --output-json data/text_comments/video_comment_train.json --recursive --include-glob "*capture1*" --strip-suffix "_capture1.avi" --video-ext ".avi" --prompt-preset jigsaw --output-text-key comment --fps 1.0 --attn-implementation flash_attention_2
+```
+
+Cataract descriptions:
+
+```text
+python scripts/generate_qwen_video_comments.py --video-root data/raw_videos --output-json data/text_comments/cataract_description.json --prompt-preset cataract --output-text-key description --fps 25
+```
+
+If starting from existing pairwise action-difference comment files, the old
+`text_ground_truth*.json` files can be reproduced by keeping one single-video comment per unique
+`video_0_name`/`video_1_name`:
+
+```text
+python scripts/generate_text_ground_truth.py --pair-json data/text_comments/all_gd.json --output-json data/text_comments/text_ground_truth.json
+python scripts/generate_text_ground_truth.py --pair-json data/text_comments/test_text.json --output-json data/text_comments/text_ground_truth_test.json
+```
+
+Then convert `commentary` to the `comment` field used by text embedding extraction:
+
+```text
+python scripts/generate_video_comments.py --source-json data/text_comments/text_ground_truth.json --output-json data/text_comments/video_comment_train.json
+python scripts/generate_video_comments.py --source-json data/text_comments/text_ground_truth_test.json --output-json data/text_comments/video_comment_test.json
+```
+
 ## Step 1: Extract Text Embeddings
 
 Train comments:
@@ -171,6 +218,9 @@ Each script exposes argparse help:
 
 ```text
 python scripts/extract_text_embeddings.py --help
+python scripts/generate_qwen_video_comments.py --help
+python scripts/generate_text_ground_truth.py --help
+python scripts/generate_video_comments.py --help
 python scripts/extract_video_keypoints_hot.py --help
 python scripts/train_diffusion.py --help
 python scripts/generate_diffusion_embeddings.py --help

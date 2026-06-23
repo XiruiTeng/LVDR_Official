@@ -25,6 +25,13 @@ from .score import (
     predict_scores,
     train_score_model,
 )
+from .text_comments import (
+    DEFAULT_QWEN_VL_MODEL,
+    available_qwen_prompt_presets,
+    generate_qwen_video_comments,
+    generate_text_ground_truth_from_pairs,
+    generate_video_comments,
+)
 from .utils import load_tensor, resolve_device, seed_everything
 
 
@@ -60,6 +67,63 @@ def build_parser() -> argparse.ArgumentParser:
     copy_f.add_argument("--max-samples", type=int, default=0)
     copy_f.add_argument("--skip-missing", action="store_true")
     copy_f.add_argument("--overwrite", action="store_true")
+
+    qwen_comments = sub.add_parser(
+        "generate-qwen-video-comments",
+        help="Generate per-video comment JSON directly from videos with Qwen2.5-VL.",
+    )
+    qwen_comments.add_argument("--video-root", type=Path, required=True)
+    qwen_comments.add_argument("--output-json", type=Path, required=True)
+    qwen_comments.add_argument("--split-json", type=Path, default=None)
+    qwen_comments.add_argument("--name-key", default="name")
+    qwen_comments.add_argument("--output-text-key", default="comment")
+    qwen_comments.add_argument("--video-ext", default=".mp4")
+    qwen_comments.add_argument("--recursive", action="store_true")
+    qwen_comments.add_argument("--include-glob", default=None)
+    qwen_comments.add_argument("--strip-suffix", default=None)
+    qwen_comments.add_argument("--model-id", default=DEFAULT_QWEN_VL_MODEL)
+    qwen_comments.add_argument("--prompt-preset", choices=available_qwen_prompt_presets(), default="fitness")
+    qwen_comments.add_argument("--prompt", default=None)
+    qwen_comments.add_argument("--prompt-file", type=Path, default=None)
+    qwen_comments.add_argument("--max-pixels", type=int, default=360 * 420)
+    qwen_comments.add_argument("--fps", type=float, default=1.0)
+    qwen_comments.add_argument("--max-new-tokens", type=int, default=128)
+    qwen_comments.add_argument("--device", default="cuda")
+    qwen_comments.add_argument("--device-map", default="auto")
+    qwen_comments.add_argument("--attn-implementation", default=None)
+    qwen_comments.add_argument("--max-samples", type=int, default=0)
+    qwen_comments.add_argument("--save-every", type=int, default=1)
+    qwen_comments.add_argument("--resume", action="store_true")
+    qwen_comments.add_argument("--skip-missing", action="store_true")
+
+    comments = sub.add_parser("generate-video-comments", help="Generate video_comment JSON from commentary annotations.")
+    comments.add_argument("--source-json", type=Path, required=True)
+    comments.add_argument("--output-json", type=Path, required=True)
+    comments.add_argument("--split-json", type=Path, default=None)
+    comments.add_argument("--name-key", default="name")
+    comments.add_argument("--source-text-key", default="commentary")
+    comments.add_argument("--output-text-key", default="comment")
+    comments.add_argument("--score-json", type=Path, default=None)
+    comments.add_argument("--score-key", default="score")
+    comments.add_argument("--output-score-key", default="score")
+    comments.add_argument("--max-samples", type=int, default=0)
+    comments.add_argument("--skip-missing", action="store_true")
+
+    text_gt = sub.add_parser(
+        "generate-text-ground-truth",
+        help="Extract text_ground_truth JSON from pairwise action-difference comment data.",
+    )
+    text_gt.add_argument("--pair-json", type=Path, required=True)
+    text_gt.add_argument("--output-json", type=Path, required=True)
+    text_gt.add_argument("--first-name-key", default="video_0_name")
+    text_gt.add_argument("--first-comment-key", default="video_0_comment")
+    text_gt.add_argument("--second-name-key", default="video_1_name")
+    text_gt.add_argument("--second-comment-key", default="video_1_comment")
+    text_gt.add_argument("--output-name-key", default="name")
+    text_gt.add_argument("--output-text-key", default="commentary")
+    text_gt.add_argument("--existing-feature-root", type=Path, default=None)
+    text_gt.add_argument("--existing-feature-ext", default=".pt")
+    text_gt.add_argument("--max-samples", type=int, default=0)
 
     text = sub.add_parser("extract-text", help="Extract InternVideo language-model text embeddings.")
     text.add_argument("--split-json", type=Path, required=True)
@@ -239,6 +303,69 @@ def main() -> None:
             skip_missing=args.skip_missing,
         )
         print(json.dumps({"num_written": len(written), "output_dir": str(args.output_dir)}, indent=2))
+        return
+
+    if args.command == "generate-qwen-video-comments":
+        prompt = args.prompt_file.read_text(encoding="utf-8") if args.prompt_file else args.prompt
+        result = generate_qwen_video_comments(
+            args.video_root,
+            args.output_json,
+            split_json=args.split_json,
+            name_key=args.name_key,
+            output_text_key=args.output_text_key,
+            video_ext=args.video_ext,
+            recursive=args.recursive,
+            include_glob=args.include_glob,
+            strip_suffix=args.strip_suffix,
+            model_id=args.model_id,
+            prompt_preset=args.prompt_preset,
+            prompt=prompt,
+            max_pixels=args.max_pixels,
+            fps=args.fps,
+            max_new_tokens=args.max_new_tokens,
+            device=args.device,
+            device_map=args.device_map,
+            attn_implementation=args.attn_implementation,
+            max_samples=args.max_samples,
+            save_every=args.save_every,
+            resume=args.resume,
+            skip_missing=args.skip_missing,
+        )
+        print(json.dumps(result, indent=2))
+        return
+
+    if args.command == "generate-video-comments":
+        result = generate_video_comments(
+            args.source_json,
+            args.output_json,
+            split_json=args.split_json,
+            name_key=args.name_key,
+            source_text_key=args.source_text_key,
+            output_text_key=args.output_text_key,
+            score_json=args.score_json,
+            score_key=args.score_key,
+            output_score_key=args.output_score_key,
+            max_samples=args.max_samples,
+            skip_missing=args.skip_missing,
+        )
+        print(json.dumps(result, indent=2))
+        return
+
+    if args.command == "generate-text-ground-truth":
+        result = generate_text_ground_truth_from_pairs(
+            args.pair_json,
+            args.output_json,
+            first_name_key=args.first_name_key,
+            first_comment_key=args.first_comment_key,
+            second_name_key=args.second_name_key,
+            second_comment_key=args.second_comment_key,
+            output_name_key=args.output_name_key,
+            output_text_key=args.output_text_key,
+            existing_feature_root=args.existing_feature_root,
+            existing_feature_ext=args.existing_feature_ext,
+            max_samples=args.max_samples,
+        )
+        print(json.dumps(result, indent=2))
         return
 
     if args.command == "extract-text":

@@ -12,6 +12,17 @@ Required text-comment files for text embedding extraction:
 - `data/text_comments/video_comment_train.json`
 - `data/text_comments/video_comment_test.json`
 
+For FitnessAQA, FineDiving, JIGSAWS, Cataract, or similar datasets, those files can be generated
+directly from raw videos with `scripts/generate_qwen_video_comments.py`.
+
+If starting from existing pairwise action-difference comment annotations, generate the final
+`video_comment*.json` files from:
+
+- `data/text_comments/all_gd.json`
+- `data/text_comments/test_text.json`
+- `data/text_comments/text_ground_truth.json`
+- `data/text_comments/text_ground_truth_test.json`
+
 Raw feature inputs, if extracting from raw data:
 
 - `data/raw_videos/<name>.mp4`
