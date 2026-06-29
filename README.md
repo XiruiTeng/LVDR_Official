@@ -1,4 +1,4 @@
-# [ECCV 2026] Latent Visual Diffusion Reasoning with Monte Carlo Tree Search
+# [ECCV 2026] [Latent Visual Diffusion Reasoning with Monte Carlo Tree Search](https://arxiv.org/abs/2606.27988)
 
 The official implementation of _Latent Visual Diffusion Reasoning with Monte Carlo Tree Search_
 
